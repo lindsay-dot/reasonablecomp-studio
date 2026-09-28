@@ -64,6 +64,18 @@
 
   function occTitle(code) { return occByCode[code] ? occByCode[code][1] : code; }
 
+  // Client's state: stored explicitly for new/edited clients; derived from the
+  // area for clients created before the state/county picker existed.
+  function clientStateFips(c) {
+    if (c.stateFips) return c.stateFips;
+    var a = areaByCode[c.areaCode];
+    return a && a[2] !== 'N' ? a[3] : '';
+  }
+  function areaLabel(c) {
+    var name = areaByCode[c.areaCode] ? areaByCode[c.areaCode][1] : 'no area set';
+    return c.countyName ? c.countyName + ' → ' + name : name;
+  }
+
   function searchOccupations(q) {
     q = q.trim().toLowerCase();
     if (q.length < 2) return [];
@@ -187,7 +199,7 @@
       var row = el('div', { class: 'clientrow', onclick: function () { nav('#/client/' + c.id); } });
       row.appendChild(el('div', { class: 'cname' }, [c.name || '(unnamed)']));
       var meta = el('div', { class: 'cmeta' }, [
-        (c.entityType || 'S-Corp') + ' · ' + (areaByCode[c.areaCode] ? areaByCode[c.areaCode][1] : 'no area set') + ' · ' + shs.length + ' shareholder' + (shs.length === 1 ? '' : 's'),
+        (c.entityType || 'S-Corp') + ' · ' + areaLabel(c) + ' · ' + shs.length + ' shareholder' + (shs.length === 1 ? '' : 's'),
       ]);
       shs.forEach(function (sh) {
         var st = analysisStatus(sh, c);
@@ -207,14 +219,14 @@
 
     root.appendChild(el('p', { class: 'muted' }, [
       'Wage data: BLS OEWS ' + DATA.release + ' release (generated ' + new Date(DATA.generatedAt).toLocaleDateString() + '). ' +
-      'Refresh annually each May: node scripts/refresh-oews.js',
+      'Refresh annually each May: node scripts/refresh-oews.js --email you@yourfirm.com',
     ]));
   }
 
   function addClient() {
     var name = prompt('Client (company) name:');
     if (!name) return;
-    var c = { id: newId(), name: name, entityType: 'S-Corp', state: '', areaCode: '0017660', fiscalYearEnd: '12/31', shareholders: [] };
+    var c = { id: newId(), name: name, entityType: 'S-Corp', stateFips: '42', countyCode: '', countyName: '', areaCode: '4200000', fiscalYearEnd: '12/31', shareholders: [] };
     store.clients.push(c); save(); nav('#/client/' + c.id);
   }
 
@@ -239,22 +251,47 @@
     grid.appendChild(field('Company name', c.name, function (v) { c.name = v; }));
     grid.appendChild(selectField('Entity type', c.entityType, ['S-Corp', 'LLC taxed as S-Corp'], function (v) { c.entityType = v; }));
     grid.appendChild(field('Fiscal year end', c.fiscalYearEnd, function (v) { c.fiscalYearEnd = v; }));
-    var areaSel = el('div', {}, [el('label', {}, ['Principal work area (OEWS)'])]);
-    var sel = el('select', {
-      onchange: function () { c.areaCode = sel.value; save(); },
+    var stateFips = clientStateFips(c);
+    var stateSel = el('select', {
+      onchange: function () {
+        c.stateFips = stateSel.value || undefined;
+        c.countyCode = ''; c.countyName = '';
+        c.areaCode = stateSel.value ? stateSel.value + '00000' : '0000000';
+        save(); render();
+      },
     });
-    DATA.areas.slice().sort(function (a, b) {
-      var order = { N: 0, S: 1, M: 2 };
-      return order[a[2]] - order[b[2]] || a[1].localeCompare(b[1]);
-    }).forEach(function (a) {
-      var o = el('option', { value: a[0] }, [(a[2] === 'M' ? '· ' : a[2] === 'S' ? 'State: ' : '') + a[1]]);
-      if (a[0] === c.areaCode) o.selected = true;
-      sel.appendChild(o);
+    stateSel.appendChild(el('option', { value: '' }, ['National (no state)']));
+    DATA.areas.filter(function (a) { return a[2] === 'S'; }).sort(function (a, b) { return a[1].localeCompare(b[1]); }).forEach(function (a) {
+      var o = el('option', { value: a[3] }, [a[1]]);
+      if (a[3] === stateFips) o.selected = true;
+      stateSel.appendChild(o);
     });
-    areaSel.appendChild(sel);
-    grid.appendChild(areaSel);
+    grid.appendChild(el('div', {}, [el('label', {}, ['State']), stateSel]));
+
+    var stateCounties = (DATA.counties || []).filter(function (k) { return k[0] === stateFips; });
+    if (stateCounties.length) {
+      var countySel = el('select', {
+        onchange: function () {
+          var k = stateCounties.find(function (x) { return x[1] === countySel.value; });
+          c.countyCode = k ? k[1] : ''; c.countyName = k ? k[2] : '';
+          c.areaCode = k ? k[3] : stateFips + '00000';
+          save(); render();
+        },
+      });
+      countySel.appendChild(el('option', { value: '' }, ['(statewide — no county)']));
+      stateCounties.forEach(function (k) {
+        var o = el('option', { value: k[1] }, [k[2]]);
+        if (k[1] === c.countyCode) o.selected = true;
+        countySel.appendChild(o);
+      });
+      grid.appendChild(el('div', {}, [el('label', {}, ['County where the work is performed']), countySel]));
+    }
     card.appendChild(grid);
-    card.appendChild(el('p', { class: 'muted' }, ['The work area drives every wage lookup. If an occupation has no published figure there, the tool automatically falls back to the state, then national figure — and says so in the memo.']));
+    card.appendChild(el('p', {}, [el('strong', {}, ['OEWS wage area: ']), areaLabel(c)]));
+    card.appendChild(el('p', { class: 'muted' }, [
+      'BLS does not publish wages by county; each county belongs to one metro or nonmetro area, and that area’s wages are used. ' +
+      (stateFips && !stateCounties.length ? 'County detail is not loaded for this state, so statewide wages are used (add the state to STATE_DETAIL in scripts/refresh-oews.js to enable it). ' : '') +
+      'If an occupation has no published figure for the area, the tool falls back to the state, then national figure — and says so in the memo.']));
     root.appendChild(card);
 
     root.appendChild(el('h3', {}, ['Shareholder-employees']));
@@ -529,7 +566,7 @@
   function buildEngineInput(c, sh, year) {
     var yr = yearRec(sh, year);
     return {
-      client: { name: c.name, areaCode: c.areaCode },
+      client: { name: c.name, areaCode: c.areaCode, stateFips: clientStateFips(c) || undefined },
       shareholder: {
         name: sh.name, taxYear: year,
         education: yr.education, licenses: yr.licenses,
@@ -621,7 +658,7 @@
       ]));
     });
     t.appendChild(el('tr', { class: 'total' }, [
-      el('td', { colspan: '4' }, ['Blended total (' + a.costApproach.hoursPerWeek + ' hrs/week)']),
+      el('td', { colspan: '4' }, ['Blended total (priced at ' + (a.costApproach.pricedHoursPerWeek != null ? a.costApproach.pricedHoursPerWeek : a.costApproach.hoursPerWeek) + ' hrs/week' + (a.costApproach.pricedHoursPerWeek != null && a.costApproach.pricedHoursPerWeek < a.costApproach.hoursPerWeek ? '; actual ' + a.costApproach.hoursPerWeek : '') + ')']),
       el('td', { class: 'num' }, [a.costApproach.totalPctTime + '%']),
       el('td', { class: 'num' }, [fmt.usd(a.costApproach.low)]),
       el('td', { class: 'num' }, [fmt.usd(a.costApproach.mid)]),

@@ -33,9 +33,11 @@
     // ---- Full-time equivalency ----
     fullTimeHoursPerWeek: 40,
     weeksPerYear: 52,
-    // Above this many hours/week the scale-up is capped and a note is added instead —
-    // extreme hour claims should be documented, not silently monetized.
-    maxHoursScale: 60,
+    // Hours used for wage pricing are capped here. The cost approach prices each
+    // role as a non-owner employee, who would not be expected to work more than a
+    // standard full-time week; owner hours above the cap are documented as a
+    // facts-and-circumstances factor, not monetized. Part-time (< 40) still pro-rates down.
+    maxHoursScale: 40,
 
     // ---- Income approach (independent investor test) ----
     // Employer payroll cost on the proposed salary. SIMPLIFICATION: flat 7.65%

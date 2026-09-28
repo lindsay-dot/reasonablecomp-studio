@@ -7,7 +7,7 @@ This distribution is white labeled. On the client-library screen, use the
 
 ## Open the app
 
-Double-click **Launch ReasonableComp Studio.cmd**. It opens in a dedicated Microsoft Edge application window. If Edge is unavailable, it opens in the default browser.
+Windows: double-click **Launch ReasonableComp Studio.cmd**. Mac: double-click **Launch ReasonableComp Studio.command** (or open `index.html` in Chrome or Safari). On Windows, It opens in a dedicated Microsoft Edge application window. If Edge is unavailable, it opens in the default browser.
 
 No installation, server, account, or internet connection is required for normal use. Client information remains in the browser's local storage. Export a tamper-evident `.rct.json` client file after meaningful work and retain it with the tax workpapers.
 
@@ -38,12 +38,27 @@ There is no percentage-of-profit shortcut or 60/40 rule.
 
 ## Data and record integrity
 
-- Bundled BLS OEWS May 2025 release with national, all-state, and Idaho/Washington detailed-area data.
+- Bundled BLS OEWS May 2025 release with national, all-state, and Idaho, Mississippi, Pennsylvania, and Washington detailed-area data (with a state → county picker).
 - Automatic disclosed fallback from local area to state to national figures.
 - Stored analysis input snapshot and SHA-256 fingerprint.
 - SHA-256 fingerprint on exported client files; imports reject changed fingerprinted records.
 - Current-input check invalidates an analysis whenever calculation inputs change.
 - Audit memo contains the OEWS vintage, component wage bases, source manifest, workpaper fingerprint, evidence appendix, and approval record.
+
+## Location and hours
+
+- Pick the client's **state**, then the **county** where the work is performed. BLS does not publish wages by county, so each county maps to its BLS metro or nonmetro area (for example, Allegheny, Butler, and Washington counties, PA all map to Pittsburgh, PA). County detail is loaded for Idaho, Mississippi, Pennsylvania, and Washington; other states use statewide figures.
+- Hours used for pricing are capped at 40 per week: each role is priced as a non-owner employee on a standard full-time schedule. Actual hours are still documented in the memo. Change `maxHoursScale` in `js/data/config.js` to alter this.
+
+## Annual data refresh
+
+BLS publishes new OEWS data each spring. With [Node.js](https://nodejs.org) installed, run:
+
+```
+node scripts/refresh-oews.js --email you@yourfirm.com
+```
+
+BLS requires a contact email on its download server. To add county detail for another state, add its FIPS code to `STATE_DETAIL` in `scripts/refresh-oews.js` and rerun.
 
 ## Tests
 
@@ -55,7 +70,7 @@ node scripts/test-audit.js
 node scripts/test-memo.js
 ```
 
-Current suite: 66 checks.
+Current suite: 75 checks.
 
 ## Important limitation
 

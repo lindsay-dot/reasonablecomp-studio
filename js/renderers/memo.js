@@ -7,7 +7,7 @@
 (function () {
   'use strict';
 
-  function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+  function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
   function usd(n) { return n == null || !isFinite(n) ? '—' : '$' + Math.round(n).toLocaleString(); }
 
   function build(m) {
@@ -29,7 +29,7 @@
       '<tr><td>Tax year</td><td>' + esc(m.year) + '</td></tr>' +
       '<tr><td>Date prepared</td><td>' + today + '</td></tr>' +
       '<tr><td>Preparer</td><td>' + esc(m.preparer) + '</td></tr>' +
-      '<tr><td>Record status</td><td><strong>' + (m.draft ? 'DRAFT' : 'FINAL') + '</strong> · readiness ' + m.readiness.score + '%</td></tr>' +
+      '<tr><td>Record status</td><td><strong>' + (m.draft ? 'DRAFT' : 'FINAL') + '</strong> · readiness ' + esc(m.readiness.score) + '%</td></tr>' +
       '<tr><td>Wage data vintage</td><td>BLS OEWS ' + esc(a.oewsRelease) + ' release</td></tr></table></div>');
 
     // ---- summary conclusion up front ----
@@ -52,28 +52,28 @@
     // ---- 3. role breakdown ----
     html.push('<h2>2 · Role composition and market pricing (Cost / Multiple Components approach)</h2>');
     html.push('<p>' + esc(sh.name) + ' devotes approximately <strong>' + esc(yr.hoursPerWeek) + ' hours per week</strong>' +
-      (yr.seasonality ? ' (' + esc(yr.seasonality) + ')' : '') + ' to the company. The role was decomposed into its component occupations, each priced against BLS OEWS ' + esc(a.oewsRelease) + ' data for the company’s principal work area (' + esc(m.areaName(m.client.areaCode)) + '), at the wage percentile supported by the shareholder’s experience and credentials.</p>');
+      (yr.seasonality ? ' (' + esc(yr.seasonality) + ')' : '') + ' to the company. The role was decomposed into its component occupations, each priced against BLS OEWS ' + esc(a.oewsRelease) + ' data for the company’s principal work area (' + (m.client.countyName ? esc(m.client.countyName) + ', which BLS assigns to the ' + esc(m.areaName(m.client.areaCode)) + ' area' : esc(m.areaName(m.client.areaCode))) + '), at the wage percentile supported by the shareholder’s experience and credentials.</p>');
     html.push('<table class="t"><tr><th>Role component</th><th>SOC code &amp; occupation</th><th>Wage data area</th><th>Percentile — basis</th><th class="num">% time</th><th class="num">Low</th><th class="num">Mid</th><th class="num">High</th></tr>');
     a.costApproach.components.forEach(function (cc) {
       html.push('<tr><td>' + esc(cc.roleTitle || m.occTitle(cc.soc)) + '</td><td>' + esc(cc.socDisplay) + ' ' + esc(m.occTitle(cc.soc)) + '</td>' +
         '<td>' + (cc.missing ? 'no data' : esc(cc.areaUsedName) + (cc.fellBack ? '*' : '')) + '</td>' +
-        '<td>' + cc.percentile + 'th — ' + esc(cc.percentileReason) + '</td>' +
-        '<td class="num">' + cc.pctTime + '%</td><td class="num">' + usd(cc.low) + '</td><td class="num">' + usd(cc.mid) + '</td><td class="num">' + usd(cc.high) + '</td></tr>');
+        '<td>' + esc(cc.percentile) + 'th — ' + esc(cc.percentileReason) + '</td>' +
+        '<td class="num">' + esc(cc.pctTime) + '%</td><td class="num">' + usd(cc.low) + '</td><td class="num">' + usd(cc.mid) + '</td><td class="num">' + usd(cc.high) + '</td></tr>');
     });
-    html.push('<tr class="total"><td colspan="4">Blended total, scaled to ' + esc(yr.hoursPerWeek) + ' hrs/week</td><td class="num">' + a.costApproach.totalPctTime + '%</td><td class="num">' + usd(a.costApproach.low) + '</td><td class="num">' + usd(a.costApproach.mid) + '</td><td class="num">' + usd(a.costApproach.high) + '</td></tr></table>');
+    html.push('<tr class="total"><td colspan="4">Blended total, priced at ' + esc(a.costApproach.pricedHoursPerWeek != null ? a.costApproach.pricedHoursPerWeek : yr.hoursPerWeek) + ' hrs/week' + (a.costApproach.pricedHoursPerWeek != null && a.costApproach.pricedHoursPerWeek < Number(yr.hoursPerWeek) ? ' (actual ' + esc(yr.hoursPerWeek) + ')' : '') + '</td><td class="num">' + esc(a.costApproach.totalPctTime) + '%</td><td class="num">' + usd(a.costApproach.low) + '</td><td class="num">' + usd(a.costApproach.mid) + '</td><td class="num">' + usd(a.costApproach.high) + '</td></tr></table>');
     if (a.costApproach.components.some(function (cc) { return cc.fellBack; })) {
       html.push('<p class="fine">* No OEWS estimate published for the requested area at this occupation; the nearest broader geography (state, then national) was used, as noted.</p>');
     }
     a.costApproach.notes.forEach(function (n) { html.push('<p class="fine">• ' + esc(n) + '</p>'); });
     // per-component wage basis (traceability)
     html.push('<p class="fine">Wage basis per component (mid band): ' + a.costApproach.components.filter(function (cc) { return cc.midDetail; }).map(function (cc) {
-      return esc(cc.socDisplay) + ': ' + esc(cc.midDetail.basis) + ' at the ' + cc.midDetail.percentile + 'th percentile';
+      return esc(cc.socDisplay) + ': ' + esc(cc.midDetail.basis) + ' at the ' + esc(cc.midDetail.percentile) + 'th percentile';
     }).join('; ') + '.</p>');
 
     // ---- 4. market + income ----
     html.push('<h2>3 · Market approach</h2>');
     if (a.marketApproach.applicable) {
-      html.push('<p>A single occupation — ' + esc(a.marketApproach.socDisplay) + ' ' + esc(m.occTitle(a.marketApproach.soc)) + ' — accounts for ' + a.marketApproach.pctTime + '% of the shareholder’s time. Priced directly as the full role at ' + esc(a.marketApproach.areaUsedName) + ': <strong>' + usd(a.marketApproach.low) + ' / ' + usd(a.marketApproach.mid) + ' / ' + usd(a.marketApproach.high) + '</strong> (low/mid/high).</p>');
+      html.push('<p>A single occupation — ' + esc(a.marketApproach.socDisplay) + ' ' + esc(m.occTitle(a.marketApproach.soc)) + ' — accounts for ' + esc(a.marketApproach.pctTime) + '% of the shareholder’s time. Priced directly as the full role at ' + esc(a.marketApproach.areaUsedName) + ': <strong>' + usd(a.marketApproach.low) + ' / ' + usd(a.marketApproach.mid) + ' / ' + usd(a.marketApproach.high) + '</strong> (low/mid/high).</p>');
     } else {
       html.push('<p>' + esc(a.marketApproach.reason || 'Not separately applicable.') + '</p>');
     }
@@ -117,7 +117,7 @@
       html.push('<table class="t"><tr><th>Flag</th><th>Detail</th><th>Preparer response</th></tr>');
       a.flags.forEach(function (fl) {
         var resp = (yr.flagResponses || {})[fl.id];
-        html.push('<tr><td><strong>' + esc(fl.title) + '</strong><br><span class="sev sev-' + fl.severity + '">' + fl.severity + '</span></td><td>' + esc(fl.detail) + '</td><td>' + (resp ? esc(resp) : '<em>Unaddressed — resolve before finalizing.</em>') + '</td></tr>');
+        html.push('<tr><td><strong>' + esc(fl.title) + '</strong><br><span class="sev sev-' + esc(fl.severity) + '">' + esc(fl.severity) + '</span></td><td>' + esc(fl.detail) + '</td><td>' + (resp ? esc(resp) : '<em>Unaddressed — resolve before finalizing.</em>') + '</td></tr>');
       });
       html.push('</table>');
     } else {

@@ -130,10 +130,10 @@ console.log('Scenario 2: part-time junior, single role');
 
 // ============================================================ Scenario 3
 // Percentile override + hours cap. 8+ yrs (75th default), override to 90th with reason.
-// 80 hrs/wk claimed -> capped at 60. 132011 CdA 90th: $50 x 60 x 52 = 156,000 (mid).
-// high band requests pctStep(90,+1) -> stays 90 -> also 156,000.
-// low band = 75th: 40 x 60 x 52 = 124,800.
-console.log('Scenario 3: override to 90th, hours capped at 60');
+// 80 hrs/wk claimed -> capped at 40 (non-owner full-time week). 132011 CdA 90th: $50 x 40 x 52 = 104,000 (mid).
+// high band requests pctStep(90,+1) -> stays 90 -> also 104,000.
+// low band = 75th: 40 x 40 x 52 = 83,200.
+console.log('Scenario 3: override to 90th, hours capped at 40');
 {
   const input = {
     client,
@@ -143,11 +143,11 @@ console.log('Scenario 3: override to 90th, hours capped at 60');
     compHistory: [],
   };
   const r = engine.analyze(input, FIX, cfg);
-  check('cost mid = 156,000 (90th, 60 hr cap)', r.costApproach.mid, 156000);
-  check('cost low = 124,800 (75th)', r.costApproach.low, 124800);
-  check('cost high = 156,000 (clamped at 90th)', r.costApproach.high, 156000);
+  check('cost mid = 104,000 (90th, 40 hr cap)', r.costApproach.mid, 104000);
+  check('cost low = 83,200 (75th)', r.costApproach.low, 83200);
+  check('cost high = 104,000 (clamped at 90th)', r.costApproach.high, 104000);
   checkTrue('override reason preserved', r.costApproach.components[0].percentileReason.includes('management scope'));
-  checkTrue('hours-cap note present', r.costApproach.notes.some(n => n.includes('capped at 60')));
+  checkTrue('hours-cap note present', r.costApproach.notes.some(n => n.includes('capped at 40')));
 }
 
 // ============================================================ Scenario 4
@@ -262,6 +262,24 @@ console.log('Integration: real May-release OEWS data');
   checkTrue('mid in a sane band ($60k–$250k)', r.range.mid > 60000 && r.range.mid < 250000);
   checkTrue('every component traces to an area', r.costApproach.components.every(c => c.missing || c.areaUsedName));
   checkTrue('vintage propagated to result', r.oewsRelease === DATA.release);
+
+  // County picker data: Pennsylvania and Mississippi counties map to their BLS areas.
+  const county = (st, name) => DATA.counties.find(c => c[0] === st && c[2] === name);
+  checkTrue('PA has all 67 counties', DATA.counties.filter(c => c[0] === '42').length === 67);
+  checkTrue('MS has all 82 counties', DATA.counties.filter(c => c[0] === '28').length === 82);
+  ['Allegheny County', 'Washington County', 'Butler County'].forEach(n =>
+    checkTrue(n + ', PA -> Pittsburgh MSA', county('42', n) && county('42', n)[3] === '0038300'));
+  checkTrue('DeSoto County, MS -> Memphis MSA', county('28', 'DeSoto County') && county('28', 'DeSoto County')[3] === '0032820');
+  checkTrue('every mapped county has wage data', DATA.counties.every(c => DATA.wages[c[3]]));
+
+  // Cross-state metro falls back to the CLIENT's state, not the metro's primary state.
+  const fakeSoc = Object.keys(DATA.wages['2800000']).find(s => !DATA.wages['0032820'][s]);
+  if (fakeSoc) {
+    const lk = engine.lookupWage(DATA, '0032820', fakeSoc, '28');
+    checkTrue('Memphis metro gap falls back to Mississippi', lk && lk.areaUsed === '2800000');
+  }
+  const pgh = engine.analyze(Object.assign({}, input, { client: { name: 'PA Co', areaCode: '0038300', stateFips: '42' } }), DATA, cfg);
+  checkTrue('Pittsburgh analysis prices from Pittsburgh data', pgh.costApproach.components.some(c => c.areaUsed === '0038300'));
   console.log(`  info: real-data recommendation for the test CPA scenario: $${r.range.low.toLocaleString()} / $${r.range.mid.toLocaleString()} / $${r.range.high.toLocaleString()} (${r.oewsRelease})`);
 }
 

@@ -7,17 +7,22 @@
  * the coverage set below, and regenerates js/data/oews-data.js, which the app
  * loads as a plain <script> tag (no server, no build step).
  *
+ * Also downloads the BLS county-to-area crosswalk (area_definitions_m<year>.xlsx)
+ * so the app can offer a state -> county picker for the STATE_DETAIL states.
+ *
  * Usage:
- *   node scripts/refresh-oews.js                 # download fresh files, then build
- *   node scripts/refresh-oews.js --local <dir>   # use already-downloaded flat files in <dir>
+ *   node scripts/refresh-oews.js --email you@firm.com   # download fresh files, then build
+ *   node scripts/refresh-oews.js --local <dir>          # use already-downloaded files in <dir>
+ *                                                       # (oe.* flat files + area_definitions_m<year>.xlsx)
+ * The contact email can also be set with the BLS_CONTACT_EMAIL environment variable.
  *
  * Coverage (edit STATE_DETAIL to widen):
  *   - National
  *   - Every state, statewide
- *   - All metro + nonmetro areas within the states in STATE_DETAIL (Idaho, Washington)
+ *   - All metro + nonmetro areas within the states in STATE_DETAIL (Idaho, Mississippi, Pennsylvania, Washington)
  *
- * BLS requires a User-Agent identifying the requester on download.bls.gov;
- * anonymous/bot-looking requests get 403. Keep the contact email current.
+ * BLS requires a User-Agent with a contact email on download.bls.gov;
+ * anonymous/bot-looking requests get 403. Each user supplies their own email.
  */
 
 'use strict';
@@ -27,14 +32,16 @@ const os = require('os');
 const path = require('path');
 const https = require('https');
 const readline = require('readline');
+const zlib = require('zlib');
 
-const USER_AGENT = 'ReasonableCompStudio-WhiteLabel/2.0 (OEWS annual data refresh)';
+let USER_AGENT = 'ReasonableCompStudio-WhiteLabel/2.0 (OEWS annual data refresh)';
 const BASE_URL = 'https://download.bls.gov/pub/time.series/oe/';
+const AREA_DEF_URL = 'https://www.bls.gov/oes/';
 const FILES = ['oe.release', 'oe.area', 'oe.occupation', 'oe.data.0.Current'];
 
 // FIPS state codes whose metro/nonmetro areas are included in full detail.
-// 16 = Idaho, 53 = Washington. Every state's statewide figure is always included.
-const STATE_DETAIL = new Set(['16', '53']);
+// 16 = Idaho, 28 = Mississippi, 42 = Pennsylvania, 53 = Washington. Every state's statewide figure is always included.
+const STATE_DETAIL = new Set(['16', '28', '42', '53']);
 
 // Datatypes we keep (see oe.datatype):
 // 01 employment; 06-10 hourly 10/25/50/75/90; 11-15 annual 10/25/50/75/90.
@@ -49,11 +56,11 @@ const TOPCODE_FOOTNOTE = '5'; // ">= $115.00/hr or $239,200/yr"
 
 const OUT_PATH = path.join(__dirname, '..', 'js', 'data', 'oews-data.js');
 
-function download(file, destDir) {
+function download(file, destDir, baseUrl) {
   const dest = path.join(destDir, file);
   return new Promise((resolve, reject) => {
     const out = fs.createWriteStream(dest);
-    https.get(BASE_URL + file, { headers: { 'User-Agent': USER_AGENT } }, (res) => {
+    https.get((baseUrl || BASE_URL) + file, { headers: { 'User-Agent': USER_AGENT } }, (res) => {
       if (res.statusCode !== 200) {
         reject(new Error(`${file}: HTTP ${res.statusCode} — BLS may be blocking the request; check the User-Agent contact info.`));
         res.resume();
@@ -77,6 +84,72 @@ function readTsv(file) {
   });
 }
 
+// Minimal .xlsx reader (no dependencies): unzips the workbook with zlib and
+// returns the first sheet as an array of row arrays of strings. Sufficient for
+// the BLS area-definitions file, which is a single plain sheet.
+function readXlsxRows(file) {
+  const buf = fs.readFileSync(file);
+  let eocd = buf.length - 22;
+  while (eocd >= 0 && buf.readUInt32LE(eocd) !== 0x06054b50) eocd--;
+  if (eocd < 0) throw new Error(`${file}: not a valid .xlsx (zip) file`);
+  const entries = {};
+  let p = buf.readUInt32LE(eocd + 16);
+  const count = buf.readUInt16LE(eocd + 10);
+  for (let i = 0; i < count; i++) {
+    const method = buf.readUInt16LE(p + 10);
+    const csize = buf.readUInt32LE(p + 20);
+    const nameLen = buf.readUInt16LE(p + 28), extraLen = buf.readUInt16LE(p + 30), commentLen = buf.readUInt16LE(p + 32);
+    const localOff = buf.readUInt32LE(p + 42);
+    const name = buf.toString('utf8', p + 46, p + 46 + nameLen);
+    const dataStart = localOff + 30 + buf.readUInt16LE(localOff + 26) + buf.readUInt16LE(localOff + 28);
+    const raw = buf.subarray(dataStart, dataStart + csize);
+    entries[name] = () => (method === 8 ? zlib.inflateRawSync(raw) : raw).toString('utf8');
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  const unxml = (s) => s.replace(/<[^>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+  const shared = entries['xl/sharedStrings.xml']
+    ? [...entries['xl/sharedStrings.xml']().matchAll(/<si>([\s\S]*?)<\/si>/g)].map((m) => unxml(m[1]))
+    : [];
+  const sheet = entries['xl/worksheets/sheet1.xml']();
+  return [...sheet.matchAll(/<row[^>]*>([\s\S]*?)<\/row>/g)].map((rm) => {
+    const row = [];
+    for (const cm of rm[1].matchAll(/<c ([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
+      const col = cm[1].match(/r="([A-Z]+)/)[1];
+      const idx = [...col].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1;
+      const type = (cm[1].match(/t="(\w+)"/) || [])[1];
+      const body = cm[2] || '';
+      const v = (body.match(/<v>([\s\S]*?)<\/v>/) || [])[1];
+      row[idx] = type === 's' ? shared[Number(v)] : type === 'inlineStr' ? unxml(body) : (v == null ? '' : unxml(v));
+    }
+    return row;
+  });
+}
+
+// County -> OEWS area crosswalk for the STATE_DETAIL states.
+// Returns [[state_fips, county_code, county_name, area_code], ...].
+function readCounties(file, areaSet) {
+  const rows = readXlsxRows(file);
+  const header = rows[0].map((h) => String(h || '').trim().toLowerCase());
+  const col = (re) => {
+    const i = header.findIndex((h) => re.test(h));
+    if (i === -1) throw new Error(`${file}: column matching ${re} not found (header: ${header.join(' | ')})`);
+    return i;
+  };
+  const cState = col(/^fips code$/), cArea = col(/area code$/), cCounty = col(/^county code$/), cName = col(/^county name$/);
+  const out = [];
+  rows.slice(1).forEach((r) => {
+    const st = String(r[cState] || '').trim().padStart(2, '0');
+    if (!STATE_DETAIL.has(st)) return;
+    const area = String(r[cArea] || '').trim().padStart(7, '0');
+    if (!areaSet.has(area)) throw new Error(`County ${r[cName]} maps to area ${area}, which is not in oe.area`);
+    out.push([st, String(r[cCounty] || '').trim().padStart(3, '0'), String(r[cName] || '').trim(), area]);
+  });
+  out.sort((a, b) => a[0].localeCompare(b[0]) || a[2].localeCompare(b[2]));
+  return out;
+}
+
+function areaDefFile(year) { return `area_definitions_m${year}.xlsx`; }
+
 // SOC hierarchy level from the 6-digit OEWS occupation code.
 function socLevel(code) {
   if (code === '000000') return 'total';
@@ -94,12 +167,20 @@ async function build(dir) {
   const releaseYear = parseInt(releaseLabel.match(/\d{4}/)[0], 10);
   console.log(`OEWS release: ${releaseLabel} (${release.release_date})`);
 
-  // ---- areas ------------------------------------------------------------
+  // ---- counties -> area (for the state/county picker) --------------------
   const areaRows = readTsv(path.join(dir, 'oe.area'));
+  const counties = readCounties(path.join(dir, areaDefFile(releaseYear)), new Set(areaRows.map((a) => a.area_code)));
+  const countyAreas = new Set(counties.map((c) => c[3]));
+  console.log(`Counties mapped: ${counties.length} (states ${[...STATE_DETAIL].join(', ')})`);
+
+  // ---- areas ------------------------------------------------------------
+  // Metro areas are kept when their primary state is a STATE_DETAIL state OR
+  // any county in a STATE_DETAIL state belongs to them (cross-state metros such
+  // as Memphis, TN-MS-AR, whose oe.area state code is the primary state only).
   const keptAreas = areaRows.filter((a) =>
     a.areatype_code === 'N' ||
     a.areatype_code === 'S' ||
-    (a.areatype_code === 'M' && STATE_DETAIL.has(a.state_code))
+    (a.areatype_code === 'M' && (STATE_DETAIL.has(a.state_code) || countyAreas.has(a.area_code)))
   );
   const areaSet = new Set(keptAreas.map((a) => a.area_code));
   console.log(`Areas kept: ${keptAreas.length} of ${areaRows.length}`);
@@ -169,6 +250,8 @@ async function build(dir) {
     topcodeNote: 'Wage equal to or greater than $115.00/hour or $239,200/year (BLS top-code).',
     // areas: [area_code, name, type(N/S/M), state_fips]
     areas: keptAreas.map((a) => [a.area_code, a.area_name, a.areatype_code, a.state_code]),
+    // counties: [state_fips, county_code, county_name, area_code] — BLS area definitions
+    counties,
     // occupations: [code, title, level, description] — code is 6-digit; display as XX-XXXX
     occupations: keptOccs
       .filter((o) => occsWithData.has(o.occupation_code))
@@ -198,6 +281,9 @@ async function build(dir) {
   sample('0017660', '132011', "Coeur d'Alene 13-2011 Accountants & Auditors");
   sample('0044060', '119199', 'Spokane 11-9199 Managers, All Other');
   sample('1600000', '472031', 'Idaho 47-2031 Carpenters');
+  sample('0038300', '132011', 'Pittsburgh 13-2011 Accountants & Auditors');
+  sample('0037980', '111021', 'Philadelphia 11-1021 General & Operations Managers');
+  sample('0027140', '132011', 'Jackson MS 13-2011 Accountants & Auditors');
 }
 
 async function main() {
@@ -208,6 +294,12 @@ async function main() {
     if (!dir || !fs.existsSync(dir)) throw new Error('--local <dir> must point to a folder holding the oe.* flat files');
     console.log(`Using local flat files in ${dir}`);
   } else {
+    const emailIdx = process.argv.indexOf('--email');
+    const email = (emailIdx !== -1 ? process.argv[emailIdx + 1] : process.env.BLS_CONTACT_EMAIL) || '';
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+      throw new Error('BLS requires a contact email: run with --email you@firm.com (or set BLS_CONTACT_EMAIL)');
+    }
+    USER_AGENT = `ReasonableCompStudio-WhiteLabel/2.0 (OEWS annual data refresh; ${email})`;
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'oews-'));
     console.log(`Downloading OEWS flat files to ${dir} (the data file is ~330 MB; this can take a few minutes)…`);
     for (const f of FILES) {
@@ -215,6 +307,10 @@ async function main() {
       await download(f, dir);
       console.log('done');
     }
+    const year = parseInt(readTsv(path.join(dir, 'oe.release'))[0].description.match(/\d{4}/)[0], 10);
+    process.stdout.write(`  ${areaDefFile(year)} … `);
+    await download(areaDefFile(year), dir, AREA_DEF_URL);
+    console.log('done');
   }
   await build(dir);
 }

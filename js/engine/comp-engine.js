@@ -31,8 +31,11 @@
 
   // Wage lookup with MSA -> state -> national fallback. `data` is the object
   // produced by refresh-oews.js (window.RCT_DATA) or a test fixture of the same
-  // shape. Returns null only if the SOC is absent even nationally.
-  function lookupWage(data, areaCode, soc) {
+  // shape. Returns null only if the SOC is absent even nationally. `stateFips`
+  // (optional) is the client's own state: a cross-state metro (e.g. Memphis,
+  // TN-MS-AR for a DeSoto County, MS client) falls back to the client's state
+  // rather than the metro's primary state.
+  function lookupWage(data, areaCode, soc, stateFips) {
     var areaById = {};
     data.areas.forEach(function (a) { areaById[a[0]] = a; });
     var chain = [];
@@ -41,7 +44,7 @@
       chain.push(cur);
       var rec = areaById[cur];
       if (!rec) break;
-      if (rec[2] === 'M') cur = rec[3] + '00000';      // metro -> its state
+      if (rec[2] === 'M') cur = (stateFips || rec[3]) + '00000'; // metro -> client's state
       else if (rec[2] === 'S') cur = '0000000';        // state -> national
       else cur = null;                                  // national -> stop
     }
@@ -141,7 +144,7 @@
     input.roleComponents.forEach(function (rc) {
       var share = (Number(rc.pctTime) || 0) / 100;
       totalPct += Number(rc.pctTime) || 0;
-      var lk = lookupWage(data, input.client.areaCode, rc.soc);
+      var lk = lookupWage(data, input.client.areaCode, rc.soc, input.client.stateFips);
       var comp = {
         roleTitle: rc.roleTitle,
         soc: rc.soc,
@@ -175,11 +178,12 @@
         }
       });
       if (comp.topcoded) out.notes.push(socDisplay(rc.soc) + ' (' + rc.roleTitle + '): BLS top-coded wage (' + data.topcodeNote + ') — true market wage may be higher; figure is a floor.');
-      if (comp.hoursCapped) out.notes.push('Hours per week capped at ' + cfg.maxHoursScale + ' for wage scaling; document actual hours separately.');
       out.components.push(comp);
     });
 
     out.totalPctTime = totalPct;
+    out.pricedHoursPerWeek = Math.min(hours, cfg.maxHoursScale);
+    if (hours > cfg.maxHoursScale) out.notes.push('Hours per week capped at ' + cfg.maxHoursScale + ' for wage pricing: each role is priced as a non-owner employee on a standard full-time schedule, who would not be expected to work more. Actual hours (' + hours + '/week) are documented as a facts-and-circumstances factor.');
     if (Math.round(totalPct) !== 100) out.notes.push('Role components sum to ' + totalPct + '% of time, not 100% — the blend covers only the allocated share.');
     return out;
   }
@@ -196,7 +200,7 @@
       res.reason = 'No single role reaches ' + Math.round(cfg.dominantShareThreshold * 100) + '% of time (largest: ' + socDisplay(top.soc) + ' at ' + top.pctTime + '%). Cost approach controls.';
       return res;
     }
-    var lk = lookupWage(data, input.client.areaCode, top.soc);
+    var lk = lookupWage(data, input.client.areaCode, top.soc, input.client.stateFips);
     if (!lk) { res.reason = 'Dominant role ' + socDisplay(top.soc) + ' has no published OEWS data.'; return res; }
     var hours = Number(input.shareholder.hoursPerWeek) || cfg.fullTimeHoursPerWeek;
     var pct = top.percentileOverride ? Number(top.percentileOverride) : defTier.percentile;
@@ -274,7 +278,7 @@
     if (isFinite(nibc) && range && range.mid > nibc) {
       flags.push({ id: 'EXCEEDS_CAPACITY', severity: 'high',
         title: 'Recommended salary exceeds pre-compensation earnings',
-        detail: 'Market-based mid recommendation ($' + Math.round(range.mid).toLocaleString() + ') exceeds net income before officer compensation ($' + Math.round(nibc).toLocaleString() + '). Reasonable compensation is capped by what the business can actually pay — document salary set at capacity, and revisit as earnings recover.' });
+        detail: 'Market-based mid recommendation ($' + Math.round(range.mid).toLocaleString() + ') exceeds net income before officer compensation ($' + Math.round(nibc).toLocaleString() + '). The company’s ability to pay is a relevant factor, not a legal cap — document why salary was set below the market figure (if it was), and revisit as earnings recover.' });
     }
 
     // 3. Watson drift: salary flat/down while distributions climb
